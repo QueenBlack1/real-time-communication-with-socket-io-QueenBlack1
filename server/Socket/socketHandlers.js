@@ -1,31 +1,16 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const path = require('path');
+import { v4 as uuidv4 } from 'uuid';
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
-
-// Serve static files
-app.use(express.static(path.join(__dirname)));
-
-// In-memory storage
+// In-memory storage (replace with database in production)
 const users = new Map();
 const rooms = ['general', 'random', 'tech', 'games'];
-const messages = new Map();
+const messages = new Map(); // room -> messages array
 
 // Initialize rooms
 rooms.forEach(room => {
   messages.set(room, []);
 });
 
-io.on('connection', (socket) => {
+export default function socketHandlers(io, socket) {
   console.log('User connected:', socket.id);
 
   // User joins the chat
@@ -39,6 +24,8 @@ io.on('connection', (socket) => {
     };
     
     users.set(socket.id, user);
+    
+    // Join the room
     socket.join(user.room);
     
     // Notify others in the room
@@ -54,7 +41,7 @@ io.on('connection', (socket) => {
     
     socket.emit('room_data', {
       users: roomUsers,
-      messages: roomMessages.slice(-50),
+      messages: roomMessages.slice(-50), // Last 50 messages
       rooms: rooms
     });
     
@@ -68,7 +55,7 @@ io.on('connection', (socket) => {
     if (!user) return;
 
     const message = {
-      id: Date.now().toString(),
+      id: uuidv4(),
       username: user.username,
       text: messageData.text,
       room: user.room,
@@ -80,7 +67,7 @@ io.on('connection', (socket) => {
     const roomMessages = messages.get(user.room) || [];
     roomMessages.push(message);
     if (roomMessages.length > 100) {
-      roomMessages.shift();
+      roomMessages.shift(); // Keep only last 100 messages
     }
 
     // Broadcast to room
@@ -115,7 +102,7 @@ io.on('connection', (socket) => {
     
     if (fromUser && toUser) {
       const privateMessage = {
-        id: Date.now().toString(),
+        id: uuidv4(),
         from: fromUser.username,
         to: toUser.username,
         text: data.text,
@@ -125,6 +112,8 @@ io.on('connection', (socket) => {
 
       // Send to recipient
       io.to(toUser.id).emit('receive_private_message', privateMessage);
+      
+      // Send back to sender for their own chat
       socket.emit('receive_private_message', privateMessage);
     }
   });
@@ -134,6 +123,7 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (!user || !rooms.includes(newRoom)) return;
 
+    // Leave current room
     socket.leave(user.room);
     socket.to(user.room).emit('user_left', {
       username: user.username,
@@ -141,15 +131,18 @@ io.on('connection', (socket) => {
       timestamp: new Date()
     });
 
+    // Join new room
     user.room = newRoom;
     socket.join(newRoom);
 
+    // Notify new room
     socket.to(newRoom).emit('user_joined', {
       username: user.username,
       message: `${user.username} joined the room`,
       timestamp: new Date()
     });
 
+    // Send new room data to user
     const roomUsers = Array.from(users.values()).filter(u => u.room === newRoom);
     const roomMessages = messages.get(newRoom) || [];
     
@@ -159,6 +152,7 @@ io.on('connection', (socket) => {
       rooms: rooms
     });
 
+    // Update user lists for both rooms
     io.to(user.room).emit('users_update', roomUsers);
   });
 
@@ -167,19 +161,18 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (user) {
       users.delete(socket.id);
+      
       socket.to(user.room).emit('user_left', {
         username: user.username,
         message: `${user.username} left the room`,
         timestamp: new Date()
       });
 
+      // Update user list
       const roomUsers = Array.from(users.values()).filter(u => u.room === user.room);
       io.to(user.room).emit('users_update', roomUsers);
     }
+    
+    console.log('User disconnected:', socket.id);
   });
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+}
